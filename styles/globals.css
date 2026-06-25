@@ -1,0 +1,21 @@
+:root{
+  --navy:#0f1d31; --navy-deep:#0a1421; --navy-soft:#15263e;
+  --lime:#cdfa3c; --lime-dim:#aedc1f;
+  --ink:#ffffff; --muted:#97a6bb;
+  --paper:#ffffff; --paper-soft:#f5f7fa; --line:#e6e9ee;
+}
+*{box-sizing:border-box;}
+html,body{margin:0; padding:0; font-family:'Manrope', sans-serif; background:var(--paper-soft); color:var(--navy);}
+h1,h2,h3,.heading{font-family:'Plus Jakarta Sans', sans-serif; font-weight:800; margin:0;}
+button{font-family:inherit; cursor:pointer;}
+input,select,textarea{font-family:inherit;}
+a{color:inherit;}
+
+.btn{
+  display:inline-flex; align-items:center; gap:8px; border:none; border-radius:10px;
+  font-weight:700; font-size:14.5px; padding:11px 20px; transition:transform .12s;
+}
+.btn:hover{ transform:translateY(-1px); }
+.btn-lime{ background:var(--lime); color:var(--navy-deep); }
+.btn-navy{ background:var(--navy); color:#fff; }
+.btn-outline{ background:#fff; border:1.5px solid var(--line); color:var(--navy); }

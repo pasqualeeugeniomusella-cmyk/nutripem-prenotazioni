@@ -1,0 +1,39 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  slots     Slot[]
+}
+
+model Slot {
+  id        String   @id @default(cuid())
+  date      String   // formato YYYY-MM-DD
+  time      String   // formato HH:MM
+  status    String   @default("free") // free | booked
+  groupId   String
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  booking   Booking?
+  createdAt DateTime @default(now())
+
+  @@index([groupId, date])
+}
+
+model Booking {
+  id            String   @id @default(cuid())
+  slotId        String   @unique
+  slot          Slot     @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  patientName   String
+  patientEmail  String
+  status        String   @default("confirmed") // confirmed | cancelled
+  createdAt     DateTime @default(now())
+}
