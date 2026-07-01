@@ -1,434 +1,559 @@
-import { useEffect, useState, useMemo } from "react";
-import { isAdminRequest } from "../../lib/session";
+import { useState, useEffect, useCallback } from "react";
+import Head from "next/head";
 
-export async function getServerSideProps({ req }) {
-  if (!isAdminRequest(req)) {
-    return { redirect: { destination: "/admin/login", permanent: false } };
-  }
-  return { props: {} };
+async function api(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Errore");
+  return data;
 }
 
-const monthNames = ["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
-const weekdays = ["Dom","Lun","Mar","Mer","Gio","Ven","Sab"];
+// ---- helper date ----
+function dayLabelLong(iso) {
+  return new Date(iso).toLocaleDateString("it-IT", {
+    timeZone: "Europe/Rome", weekday: "long", day: "2-digit", month: "long",
+  });
+}
+function timeLabel(iso) {
+  return new Date(iso).toLocaleTimeString("it-IT", {
+    timeZone: "Europe/Rome", hour: "2-digit", minute: "2-digit",
+  });
+}
+function ymd(y, m, d) {
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
 
-function pad(n){ return n.toString().padStart(2,"0"); }
-function toDateKey(y,m,d){ return `${y}-${pad(m+1)}-${pad(d)}`; }
+export default function Admin() {
+  const [authed, setAuthed] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-export default function AdminDashboard() {
-  const [view, setView] = useState("groups"); // groups | calendar
-  const [groups, setGroups] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedGroupId, setSelectedGroupId] = useState(null);
-  const [newGroupName, setNewGroupName] = useState("");
-  const [toast, setToast] = useState("");
+  const checkAuth = useCallback(async () => {
+    try {
+      await api("/api/admin/groups");
+      setAuthed(true);
+    } catch {
+      setAuthed(false);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
 
-  // calendar bulk-create state
-  const [viewDate, setViewDate] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
-  const [selectedDays, setSelectedDays] = useState(new Set());
-  const [startTime, setStartTime] = useState("09:00");
-  const [endTime, setEndTime] = useState("13:00");
-  const [interval, setIntervalMin] = useState(30);
-  const [generating, setGenerating] = useState(false);
+  useEffect(() => { checkAuth(); }, [checkAuth]);
 
-  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+  if (checking) return <div className="center"><p>Caricamento…</p></div>;
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
+  return <Dashboard onLogout={() => setAuthed(false)} />;
+}
 
-  function showToast(msg){
-    setToast(msg);
-    setTimeout(() => setToast(""), 2500);
-  }
+// ---------- LOGIN ----------
+function Login({ onSuccess }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  async function loadGroups(){
-    setLoading(true);
-    const res = await fetch("/api/admin/groups");
-    if (res.ok) setGroups(await res.json());
-    setLoading(false);
-  }
-
-  useEffect(() => { loadGroups(); }, []);
-
-  const selectedGroup = groups.find(g => g.id === selectedGroupId) || null;
-
-  async function handleCreateGroup(e){
+  async function submit(e) {
     e.preventDefault();
-    if (!newGroupName.trim()) return;
-    const res = await fetch("/api/admin/groups", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newGroupName.trim() }),
-    });
-    if (res.ok){
-      setNewGroupName("");
-      await loadGroups();
-      showToast("Gruppo creato");
+    setError("");
+    setLoading(true);
+    try {
+      await api("/api/admin/login", { method: "POST", body: JSON.stringify({ password }) });
+      onSuccess();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
-  }
-
-  async function handleDeleteGroup(id){
-    if (!confirm("Eliminare questo gruppo e tutti i suoi slot/prenotazioni?")) return;
-    await fetch(`/api/admin/groups/${id}`, { method: "DELETE" });
-    if (selectedGroupId === id) setSelectedGroupId(null);
-    await loadGroups();
-    showToast("Gruppo eliminato");
-  }
-
-  function copyLink(slug){
-    const link = `${baseUrl}/book/${slug}`;
-    navigator.clipboard.writeText(link).then(() => showToast("Link copiato negli appunti"));
-  }
-
-  function openCalendarFor(groupId){
-    setSelectedGroupId(groupId);
-    setView("calendar");
-    setSelectedDays(new Set());
-  }
-
-  function toggleDay(key){
-    setSelectedDays(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }
-
-  async function handleGenerateSlots(){
-    if (!selectedGroup) return;
-    if (selectedDays.size === 0) return showToast("Seleziona almeno un giorno");
-    setGenerating(true);
-    const res = await fetch(`/api/admin/groups/${selectedGroup.id}/slots`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        dates: Array.from(selectedDays),
-        startTime, endTime, intervalMinutes: interval,
-      }),
-    });
-    setGenerating(false);
-    const data = await res.json();
-    if (res.ok){
-      showToast(`${data.created} slot creati${data.skipped ? `, ${data.skipped} già esistenti` : ""}`);
-      setSelectedDays(new Set());
-      await loadGroups();
-    } else {
-      showToast(data.error || "Errore nella generazione");
-    }
-  }
-
-  async function handleCancelBooking(bookingId){
-    if (!confirm("Annullare questa prenotazione? Verrà inviata una email al paziente.")) return;
-    const res = await fetch(`/api/admin/bookings/${bookingId}/cancel`, { method: "POST" });
-    if (res.ok){
-      showToast("Prenotazione annullata, email inviata al paziente");
-      await loadGroups();
-    } else {
-      showToast("Errore durante l'annullamento");
-    }
-  }
-
-  async function handleDeleteSlot(slotId){
-    const res = await fetch(`/api/admin/slots/${slotId}`, { method: "DELETE" });
-    const data = await res.json();
-    if (res.ok){ await loadGroups(); } else { showToast(data.error || "Errore"); }
-  }
-
-  // build calendar grid for viewDate
-  const calendarDays = useMemo(() => {
-    const y = viewDate.getFullYear(), m = viewDate.getMonth();
-    const firstDay = new Date(y, m, 1).getDay();
-    const daysInMonth = new Date(y, m+1, 0).getDate();
-    const cells = [];
-    for (let i=0;i<firstDay;i++) cells.push(null);
-    for (let d=1; d<=daysInMonth; d++) cells.push(d);
-    return cells;
-  }, [viewDate]);
-
-  const slotsByDate = useMemo(() => {
-    if (!selectedGroup) return {};
-    const map = {};
-    for (const slot of selectedGroup.slots) {
-      if (!map[slot.date]) map[slot.date] = [];
-      map[slot.date].push(slot);
-    }
-    return map;
-  }, [selectedGroup]);
-
-  async function handleLogout(){
-    await fetch("/api/admin/logout", { method: "POST" });
-    window.location.href = "/admin/login";
   }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
-      {/* SIDEBAR */}
-      <aside style={{
-        width: 260, background: "var(--navy)", display: "flex", flexDirection: "column",
-        borderRight: "1px solid rgba(255,255,255,0.1)", flexShrink: 0,
-      }}>
-        <div style={{ padding: "26px 24px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-          <p style={{ color: "#fff", fontSize: 18, fontWeight: 800 }}>NutriPEM</p>
-          <p style={{ color: "var(--lime)", fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", marginTop: 4 }}>Gestione Prenotazioni</p>
+    <>
+      <Head><title>Accesso admin — NutriPEM</title><meta name="viewport" content="width=device-width, initial-scale=1" /></Head>
+      <div className="center">
+        <div className="card" style={{ width: 380 }}>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 26, fontWeight: 800 }}>NutriPEM</div>
+            <div style={{ color: "var(--lime-dark)", fontSize: 12, fontWeight: 700, letterSpacing: 1.5 }}>
+              GESTIONE PRENOTAZIONI
+            </div>
+          </div>
+          <h2>Accesso amministratore</h2>
+          <p className="hint">Inserisci la password per gestire le prenotazioni.</p>
+          <form onSubmit={submit}>
+            <label>Password</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+            {error && <div className="msg error">{error}</div>}
+            <button style={{ marginTop: 18, width: "100%" }} disabled={loading}>
+              {loading ? "Verifica…" : "Entra"}
+            </button>
+          </form>
         </div>
-        <nav style={{ flex: 1, padding: "18px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-          <SideButton active={view === "calendar"} onClick={() => setView("calendar")} label="Calendario & Slot" icon="📅" />
-          <SideButton active={view === "groups"} onClick={() => setView("groups")} label="Gruppi & Link" icon="👥" />
-        </nav>
-        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-          <button onClick={handleLogout} style={{
-            background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 12.5, fontWeight: 600,
-          }}>← Esci</button>
-        </div>
-      </aside>
+      </div>
+    </>
+  );
+}
 
-      {/* MAIN */}
-      <main style={{ flex: 1, padding: "40px 48px" }}>
-        {view === "groups" && (
-          <GroupsView
-            groups={groups}
-            loading={loading}
-            newGroupName={newGroupName}
-            setNewGroupName={setNewGroupName}
-            onCreate={handleCreateGroup}
-            onDelete={handleDeleteGroup}
-            onCopyLink={copyLink}
-            onManageSlots={openCalendarFor}
-            baseUrl={baseUrl}
-          />
-        )}
+// ---------- DASHBOARD ----------
+const TABS = {
+  today:    { label: "Oggi", icon: "☀️", title: "Appuntamenti di oggi", subtitle: "Tutti gli appuntamenti previsti per oggi, in ordine di orario." },
+  upcoming: { label: "Prossimi", icon: "📋", title: "Prossimi appuntamenti", subtitle: "Tutti gli appuntamenti futuri." },
+  calendar: { label: "Calendario & Slot", icon: "🗓", title: "Calendario & Slot", subtitle: "Seleziona i giorni, imposta gli orari e genera gli slot prenotabili." },
+  groups:   { label: "Gruppi & Link", icon: "👥", title: "Gruppi & Link", subtitle: "Crea link di prenotazione dedicati per squadre, gruppi o singoli clienti." },
+  closures: { label: "Ferie / Chiusure", icon: "🏖", title: "Ferie / Chiusure", subtitle: "Blocca i giorni in cui non ricevi: i clienti non potranno prenotare." },
+};
 
-        {view === "calendar" && (
-          <CalendarView
-            groups={groups}
-            selectedGroup={selectedGroup}
-            selectedGroupId={selectedGroupId}
-            setSelectedGroupId={setSelectedGroupId}
-            viewDate={viewDate}
-            setViewDate={setViewDate}
-            calendarDays={calendarDays}
-            selectedDays={selectedDays}
-            toggleDay={toggleDay}
-            startTime={startTime} setStartTime={setStartTime}
-            endTime={endTime} setEndTime={setEndTime}
-            interval={interval} setIntervalMin={setIntervalMin}
-            onGenerate={handleGenerateSlots}
-            generating={generating}
-            slotsByDate={slotsByDate}
-            onCancelBooking={handleCancelBooking}
-            onDeleteSlot={handleDeleteSlot}
-          />
-        )}
-      </main>
+function Dashboard({ onLogout }) {
+  const [tab, setTab] = useState("today");
 
-      {toast && (
-        <div style={{
-          position: "fixed", bottom: 28, right: 28, background: "var(--navy)", color: "#fff",
-          padding: "14px 22px", borderRadius: 12, fontSize: 14, fontWeight: 600,
-          boxShadow: "0 10px 30px -8px rgba(0,0,0,0.3)",
-        }}>{toast}</div>
+  async function logout() {
+    await api("/api/admin/logout", { method: "POST" });
+    onLogout();
+  }
+
+  const t = TABS[tab];
+
+  return (
+    <>
+      <Head><title>Pannello admin — NutriPEM</title><meta name="viewport" content="width=device-width, initial-scale=1" /></Head>
+      <div className="layout">
+        <aside className="sidebar">
+          <div>
+            <div className="logo">NutriPEM</div>
+            <div className="subtitle">Gestione Prenotazioni</div>
+          </div>
+          <nav>
+            {Object.entries(TABS).map(([key, val]) => (
+              <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>
+                <span>{val.icon}</span> {val.label}
+              </button>
+            ))}
+          </nav>
+          <div className="spacer" />
+          <button className="logout" onClick={logout}>← Esci</button>
+        </aside>
+
+        <main className="main">
+          <h1>{t.title}</h1>
+          <p className="subtitle">{t.subtitle}</p>
+
+          {tab === "today" && <BookingsView scope="today" />}
+          {tab === "upcoming" && <BookingsView scope="upcoming" />}
+          {tab === "calendar" && <CalendarView />}
+          {tab === "groups" && <GroupsView />}
+          {tab === "closures" && <ClosuresView />}
+        </main>
+      </div>
+    </>
+  );
+}
+
+// ---------- PRENOTAZIONI (Oggi / Prossimi) ----------
+function BookingsView({ scope }) {
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api(`/api/admin/bookings?scope=${scope}`);
+      setBookings(data.bookings);
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [scope]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function cancel(id) {
+    if (!confirm("Cancellare questa prenotazione? Il cliente riceverà un'email di avviso.")) return;
+    try {
+      await api("/api/admin/bookings", { method: "DELETE", body: JSON.stringify({ id }) });
+      load();
+    } catch (err) {
+      setMsg(err.message);
+    }
+  }
+
+  const byDay = {};
+  for (const b of bookings) {
+    const key = dayLabelLong(b.startAt);
+    (byDay[key] = byDay[key] || []).push(b);
+  }
+
+  return (
+    <div className="card">
+      {msg && <div className="msg error">{msg}</div>}
+      {loading ? <p>Caricamento…</p> : bookings.length === 0 ? (
+        <div className="empty">Nessun appuntamento.</div>
+      ) : (
+        Object.entries(byDay).map(([day, items]) => (
+          <div key={day} className="day-block">
+            <h4 style={{ textTransform: "capitalize" }}>{day}</h4>
+            {items.map((b) => (
+              <div key={b.id} className="list-item">
+                <div>
+                  <b style={{ fontSize: 17 }}>{timeLabel(b.startAt)}</b> — {b.patientName}
+                  <div className="meta">{b.patientEmail} · <span className="pill">{b.groupName}</span></div>
+                </div>
+                <div className="actions">
+                  <button className="ghost-red" onClick={() => cancel(b.id)}>Cancella</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))
       )}
     </div>
   );
 }
 
-function SideButton({ active, onClick, label, icon }) {
+// ---------- CALENDARIO & SLOT ----------
+function CalendarView() {
+  const [groups, setGroups] = useState([]);
+  const [groupId, setGroupId] = useState("");
+
+  const loadGroups = useCallback(async () => {
+    const data = await api("/api/admin/groups");
+    setGroups(data.groups);
+    if (data.groups.length && !groupId) setGroupId(data.groups[0].id);
+  }, [groupId]);
+
+  useEffect(() => { loadGroups(); }, [loadGroups]);
+
+  if (groups.length === 0) {
+    return <div className="card"><div className="empty">Crea prima un gruppo nella sezione "Gruppi & Link".</div></div>;
+  }
+
   return (
-    <button onClick={onClick} style={{
-      display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "12px 16px",
-      borderRadius: 12, border: "none", background: active ? "var(--lime)" : "none",
-      color: active ? "var(--navy)" : "rgba(255,255,255,0.6)", fontWeight: 600, fontSize: 14.5, textAlign: "left",
-    }}>
-      <span>{icon}</span>{label}
-    </button>
+    <>
+      <div className="card">
+        <label>Gruppo</label>
+        <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+          {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      </div>
+      {groupId && <SlotManager groupId={groupId} />}
+    </>
   );
 }
 
-function GroupsView({ groups, loading, newGroupName, setNewGroupName, onCreate, onDelete, onCopyLink, onManageSlots, baseUrl }) {
-  return (
-    <div>
-      <h1 style={{ fontSize: 34 }}>Gruppi & Link</h1>
-      <p style={{ color: "#5b6878", fontSize: 14.5, marginTop: 6, marginBottom: 28 }}>
-        Crea link di prenotazione dedicati per squadre, gruppi o singoli clienti.
-      </p>
-      <form onSubmit={onCreate} style={{ display: "flex", gap: 10, marginBottom: 28, flexWrap: "wrap" }}>
-        <input
-          value={newGroupName}
-          onChange={(e) => setNewGroupName(e.target.value)}
-          placeholder="Nome gruppo (es. Squadra Under 17)"
-          style={{ flex: 1, minWidth: 220, padding: "12px 16px", borderRadius: 10, border: "1.5px solid var(--line)", fontSize: 14.5 }}
-        />
-        <button type="submit" className="btn btn-lime">+ Crea gruppo</button>
-      </form>
+function SlotManager({ groupId }) {
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth());
+  const [selectedDays, setSelectedDays] = useState([]);
+  const [startTime, setStartTime] = useState("09:00");
+  const [endTime, setEndTime] = useState("13:00");
+  const [durationMin, setDurationMin] = useState(30);
+  const [slots, setSlots] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-      {loading ? <p>Caricamento...</p> : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {groups.length === 0 && <p style={{ color: "#8a96a6" }}>Nessun gruppo creato ancora.</p>}
-          {groups.map(g => {
-            const totalSlots = g.slots.length;
-            const booked = g.slots.filter(s => s.booking).length;
+  const loadSlots = useCallback(async () => {
+    try {
+      const data = await api(`/api/admin/slots?groupId=${groupId}`);
+      setSlots(data.slots);
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }, [groupId]);
+
+  useEffect(() => { loadSlots(); setSelectedDays([]); }, [loadSlots]);
+
+  const monthName = new Date(year, month, 1).toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+  const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7; // lun=0
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayKey = ymd(today.getFullYear(), today.getMonth(), today.getDate());
+
+  function toggleDay(d) {
+    const key = ymd(year, month, d);
+    if (key < todayKey) return;
+    setSelectedDays((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
+  }
+  function prevMonth() {
+    if (month === 0) { setMonth(11); setYear(year - 1); } else setMonth(month - 1);
+  }
+  function nextMonth() {
+    if (month === 11) { setMonth(0); setYear(year + 1); } else setMonth(month + 1);
+  }
+
+  async function generate() {
+    if (selectedDays.length === 0) { setMsg({ type: "error", text: "Seleziona almeno un giorno." }); return; }
+    setLoading(true); setMsg(null);
+    try {
+      const data = await api("/api/admin/slots", {
+        method: "POST",
+        body: JSON.stringify({ groupId, days: selectedDays, startTime, endTime, durationMin: Number(durationMin) }),
+      });
+      setMsg({ type: "success", text: `Creati ${data.created} slot${data.skipped ? ` (${data.skipped} già esistenti, saltati)` : ""}.` });
+      setSelectedDays([]);
+      loadSlots();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function removeSlot(id) {
+    try {
+      await api("/api/admin/slots", { method: "DELETE", body: JSON.stringify({ id }) });
+      loadSlots();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }
+
+  // Raggruppa slot per data (yyyy-MM-dd italiano)
+  const byDay = {};
+  for (const s of slots) {
+    const key = new Date(s.startAt).toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" }); // yyyy-MM-dd
+    (byDay[key] = byDay[key] || []).push(s);
+  }
+
+  const weekdays = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+
+  return (
+    <>
+      <div className="card">
+        <div className="cal-header">
+          <h3>{monthName}</h3>
+          <div className="cal-nav">
+            <button className="ghost" onClick={prevMonth}>←</button>
+            <button className="ghost" onClick={nextMonth}>→</button>
+          </div>
+        </div>
+
+        <div className="cal-weekdays">
+          {weekdays.map((w) => <span key={w}>{w}</span>)}
+        </div>
+        <div className="cal-grid">
+          {Array.from({ length: firstWeekday }).map((_, i) => <div key={"e" + i} className="cal-cell empty" />)}
+          {Array.from({ length: daysInMonth }).map((_, i) => {
+            const d = i + 1;
+            const key = ymd(year, month, d);
+            const isPast = key < todayKey;
+            const selected = selectedDays.includes(key);
             return (
-              <div key={g.id} style={{
-                background: "#fff", border: "1px solid var(--line)", borderRadius: 16, padding: "20px 24px",
-                display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14,
-              }}>
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: 16 }}>{g.name}</div>
-                  <div style={{ color: "#5b6878", fontSize: 13, marginTop: 4, wordBreak: "break-all" }}>
-                    {baseUrl}/book/{g.slug}
-                  </div>
-                  <div style={{ color: "#8a96a6", fontSize: 12.5, marginTop: 6 }}>
-                    {totalSlots} slot totali · {booked} prenotati
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button onClick={() => onManageSlots(g.id)} className="btn btn-outline">Gestisci slot</button>
-                  <button onClick={() => onCopyLink(g.slug)} className="btn btn-outline" style={{ borderColor: "var(--lime-dim)", color: "#5b8400" }}>Copia link</button>
-                  <button onClick={() => onDelete(g.id)} className="btn btn-outline" style={{ borderColor: "#f0c9c9", color: "#c44" }}>Elimina</button>
-                </div>
-              </div>
+              <button
+                key={d}
+                className={`cal-cell${selected ? " selected" : ""}${isPast ? " past" : ""}`}
+                onClick={() => toggleDay(d)}
+                disabled={isPast}
+              >
+                {d}
+              </button>
             );
           })}
         </div>
-      )}
-    </div>
-  );
-}
 
-function CalendarView({
-  groups, selectedGroup, selectedGroupId, setSelectedGroupId,
-  viewDate, setViewDate, calendarDays, selectedDays, toggleDay,
-  startTime, setStartTime, endTime, setEndTime, interval, setIntervalMin,
-  onGenerate, generating, slotsByDate, onCancelBooking, onDeleteSlot,
-}) {
-  const y = viewDate.getFullYear(), m = viewDate.getMonth();
-  const today = new Date();
+        <div style={{ borderTop: "1px solid var(--gray-100)", margin: "24px 0" }} />
 
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 18, marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 34 }}>Calendario & Slot</h1>
-          <p style={{ color: "#5b6878", fontSize: 14.5, marginTop: 6 }}>Seleziona un gruppo, poi i giorni e l'orario per generare gli slot in blocco.</p>
+        <div className="row">
+          <div style={{ maxWidth: 130 }}>
+            <label>Dalle</label>
+            <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+          </div>
+          <div style={{ maxWidth: 130 }}>
+            <label>Alle</label>
+            <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+          </div>
+          <div style={{ maxWidth: 130 }}>
+            <label>Ogni (minuti)</label>
+            <input type="number" min="5" step="5" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} />
+          </div>
+          <button onClick={generate} disabled={loading} style={{ flex: 2 }}>
+            {loading ? "Genero…" : `+ Genera slot (${selectedDays.length} giorni selezionati)`}
+          </button>
         </div>
-        <select
-          value={selectedGroupId || ""}
-          onChange={(e) => setSelectedGroupId(e.target.value || null)}
-          style={{ padding: "10px 16px", borderRadius: 10, border: "1.5px solid var(--line)", fontSize: 14.5, minWidth: 220 }}
-        >
-          <option value="">Seleziona gruppo...</option>
-          {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-        </select>
+        {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
       </div>
 
-      {!selectedGroup ? (
-        <p style={{ color: "#8a96a6" }}>Seleziona un gruppo per gestirne il calendario e gli slot.</p>
-      ) : (
-        <>
-          <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 18, padding: 26, marginBottom: 26 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <strong>{monthNames[m]} {y}</strong>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setViewDate(new Date(y, m-1, 1))} className="btn btn-outline" style={{ padding: "6px 12px" }}>‹</button>
-                <button onClick={() => setViewDate(new Date(today.getFullYear(), today.getMonth(), 1))} className="btn btn-outline" style={{ padding: "6px 12px" }}>Oggi</button>
-                <button onClick={() => setViewDate(new Date(y, m+1, 1))} className="btn btn-outline" style={{ padding: "6px 12px" }}>›</button>
+      <div className="card">
+        <h2>Slot generati</h2>
+        {slots.length === 0 ? (
+          <div className="empty">Nessuno slot ancora generato per questo gruppo.</div>
+        ) : (
+          Object.entries(byDay).map(([day, items]) => (
+            <div key={day} className="day-block">
+              <h4>{day}</h4>
+              <div className="slot-tags">
+                {items.map((s) => (
+                  <span key={s.id} className="slot-tag">
+                    {timeLabel(s.startAt)}
+                    {s.booked ? <span className="pill" style={{ marginLeft: 4 }}>prenotato</span>
+                      : <button onClick={() => removeSlot(s.id)} title="Elimina">×</button>}
+                  </span>
+                ))}
               </div>
             </div>
-            <p style={{ fontSize: 13, color: "#5b6878", marginBottom: 10 }}>Clicca sui giorni che vuoi rendere disponibili (puoi selezionarne più di uno):</p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 6 }}>
-              {weekdays.map(w => <span key={w} style={{ textAlign: "center", fontSize: 12, fontWeight: 700, color: "#8a96a6" }}>{w}</span>)}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6 }}>
-              {calendarDays.map((d, idx) => {
-                if (d === null) return <div key={idx} />;
-                const key = toDateKey(y, m, d);
-                const isSelected = selectedDays.has(key);
-                const isToday = key === toDateKey(today.getFullYear(), today.getMonth(), today.getDate());
-                const hasSlots = !!slotsByDate[key];
-                return (
-                  <div
-                    key={idx}
-                    onClick={() => toggleDay(key)}
-                    style={{
-                      aspectRatio: "1", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 14, fontWeight: 600, cursor: "pointer", position: "relative",
-                      background: isSelected ? "var(--navy)" : (isToday ? "#f4ffd9" : "var(--paper-soft)"),
-                      color: isSelected ? "#fff" : "var(--navy)",
-                      border: isToday && !isSelected ? "1.5px solid var(--lime)" : "1.5px solid transparent",
-                    }}
-                  >
-                    {d}
-                    {hasSlots && <span style={{ position: "absolute", bottom: 5, width: 4, height: 4, borderRadius: "50%", background: isSelected ? "var(--lime)" : "var(--lime-dim)" }} />}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginTop: 20, paddingTop: 20, borderTop: "1px solid var(--line)" }}>
-              <Field label="Dalle">
-                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={inputStyle} />
-              </Field>
-              <Field label="Alle">
-                <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={inputStyle} />
-              </Field>
-              <Field label="Ogni (minuti)">
-                <input type="number" min="5" step="5" value={interval} onChange={(e) => setIntervalMin(e.target.value)} style={{ ...inputStyle, width: 90 }} />
-              </Field>
-              <button onClick={onGenerate} disabled={generating} className="btn btn-lime">
-                {generating ? "Generazione..." : `+ Genera slot (${selectedDays.size} giorni selezionati)`}
-              </button>
-            </div>
-          </div>
-
-          <SlotsList slotsByDate={slotsByDate} onCancelBooking={onCancelBooking} onDeleteSlot={onDeleteSlot} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <div>
-      <label style={{ display: "block", fontSize: 12.5, fontWeight: 700, marginBottom: 6, color: "#5b6878" }}>{label}</label>
-      {children}
-    </div>
-  );
-}
-
-const inputStyle = { padding: "10px 12px", borderRadius: 8, border: "1.5px solid var(--line)", fontSize: 14 };
-
-function SlotsList({ slotsByDate, onCancelBooking, onDeleteSlot }) {
-  const dates = Object.keys(slotsByDate).sort();
-  if (dates.length === 0) return <p style={{ color: "#8a96a6" }}>Nessuno slot generato per questo gruppo ancora.</p>;
-
-  return (
-    <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 18, padding: 26 }}>
-      <h3 style={{ fontSize: 18, marginBottom: 16 }}>Slot generati</h3>
-      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        {dates.map(date => (
-          <div key={date}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>{date}</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {slotsByDate[date].sort((a,b) => a.time.localeCompare(b.time)).map(slot => (
-                <div key={slot.id} style={{
-                  display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10,
-                  background: slot.booking ? "#fdf0e0" : "var(--paper-soft)",
-                  border: slot.booking ? "1px solid #eec98a" : "1px solid transparent",
-                }}>
-                  <span style={{ fontWeight: 700, fontSize: 13.5 }}>{slot.time}</span>
-                  {slot.booking ? (
-                    <>
-                      <span style={{ fontSize: 12, color: "#7a5a1a" }}>· {slot.booking.patientName}</span>
-                      <button onClick={() => onCancelBooking(slot.booking.id)} style={{
-                        background: "none", border: "none", color: "#c44", fontSize: 12, fontWeight: 700,
-                      }}>Annulla</button>
-                    </>
-                  ) : (
-                    <button onClick={() => onDeleteSlot(slot.id)} style={{
-                      background: "none", border: "none", color: "#8a96a6", fontSize: 12, fontWeight: 700,
-                    }}>✕</button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
-    </div>
+    </>
+  );
+}
+
+// ---------- GRUPPI & LINK ----------
+function GroupsView() {
+  const [groups, setGroups] = useState([]);
+  const [name, setName] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [baseUrl, setBaseUrl] = useState("");
+
+  useEffect(() => { setBaseUrl(window.location.origin); }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api("/api/admin/groups");
+      setGroups(data.groups);
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function createGroup(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    try {
+      await api("/api/admin/groups", { method: "POST", body: JSON.stringify({ name }) });
+      setName("");
+      load();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }
+
+  async function deleteGroup(id) {
+    if (!confirm("Eliminare il gruppo con TUTTI i suoi slot e prenotazioni?")) return;
+    try {
+      await api("/api/admin/groups", { method: "DELETE", body: JSON.stringify({ id }) });
+      load();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }
+
+  function copy(link) { navigator.clipboard?.writeText(link); }
+
+  return (
+    <>
+      <div className="card">
+        <form onSubmit={createGroup} className="row">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome gruppo (es. Squadra Under 17)" style={{ flex: 4 }} />
+          <button style={{ flex: 1, minWidth: 150 }}>+ Crea gruppo</button>
+        </form>
+        {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+      </div>
+
+      {groups.map((g) => {
+        const link = `${baseUrl}/book/${g.slug}`;
+        return (
+          <div key={g.id} className="card">
+            <div className="list-item">
+              <div>
+                <h2>{g.name}</h2>
+                <div className="link-mono" style={{ margin: "6px 0" }}>{link}</div>
+                <div className="meta">{g.slotCount} slot totali · {g.bookedCount} prenotati</div>
+              </div>
+              <div className="actions">
+                <button className="ghost-lime" onClick={() => copy(link)}>Copia link</button>
+                <button className="ghost-red" onClick={() => deleteGroup(g.id)}>Elimina</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {groups.length === 0 && <div className="empty">Nessun gruppo ancora creato.</div>}
+    </>
+  );
+}
+
+// ---------- FERIE / CHIUSURE ----------
+function ClosuresView() {
+  const [closures, setClosures] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [day, setDay] = useState("");
+  const [groupId, setGroupId] = useState("");
+  const [reason, setReason] = useState("");
+  const [msg, setMsg] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [c, g] = await Promise.all([api("/api/admin/closures"), api("/api/admin/groups")]);
+      setClosures(c.closures);
+      setGroups(g.groups);
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function add(e) {
+    e.preventDefault();
+    if (!day) { setMsg({ type: "error", text: "Scegli un giorno." }); return; }
+    try {
+      await api("/api/admin/closures", { method: "POST", body: JSON.stringify({ day, groupId: groupId || null, reason }) });
+      setDay(""); setReason("");
+      setMsg({ type: "success", text: "Giorno di chiusura aggiunto." });
+      load();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }
+
+  async function remove(id) {
+    try {
+      await api("/api/admin/closures", { method: "DELETE", body: JSON.stringify({ id }) });
+      load();
+    } catch (err) {
+      setMsg({ type: "error", text: err.message });
+    }
+  }
+
+  return (
+    <>
+      <div className="card">
+        <form onSubmit={add}>
+          <div className="row">
+            <div><label>Giorno</label><input type="date" value={day} onChange={(e) => setDay(e.target.value)} /></div>
+            <div>
+              <label>Gruppo</label>
+              <select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+                <option value="">Tutti i gruppi</option>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <label>Motivo (facoltativo)</label>
+          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Es. Ferie estive" />
+          <button style={{ marginTop: 16 }}>+ Aggiungi chiusura</button>
+        </form>
+        {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
+      </div>
+
+      <div className="card">
+        <h2>Chiusure programmate</h2>
+        {closures.length === 0 ? <div className="empty">Nessuna chiusura.</div> : (
+          closures.map((c) => (
+            <div key={c.id} className="list-item">
+              <div>
+                <b>{new Date(c.day).toLocaleDateString("it-IT", { timeZone: "Europe/Rome", weekday: "long", day: "2-digit", month: "long", year: "numeric" })}</b>
+                <div className="meta">{c.group ? c.group.name : "Tutti i gruppi"}{c.reason ? ` · ${c.reason}` : ""}</div>
+              </div>
+              <div className="actions"><button className="ghost" onClick={() => remove(c.id)}>Rimuovi</button></div>
+            </div>
+          ))
+        )}
+      </div>
+    </>
   );
 }

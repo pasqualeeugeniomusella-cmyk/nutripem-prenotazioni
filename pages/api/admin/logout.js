@@ -1,6 +1,8 @@
-import { clearAdminCookie } from "../../../lib/session";
+import { getSession } from "../../../lib/session.js";
 
-export default function handler(req, res) {
-  res.setHeader("Set-Cookie", clearAdminCookie());
-  res.status(200).json({ ok: true });
+// POST /api/admin/logout
+export default async function handler(req, res) {
+  const session = await getSession(req, res);
+  session.destroy();
+  return res.status(200).json({ ok: true });
 }

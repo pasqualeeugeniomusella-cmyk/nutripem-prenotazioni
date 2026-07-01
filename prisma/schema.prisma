@@ -1,39 +1,68 @@
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+// Prisma schema — NutriPEM booking v2
+// Postgres in produzione (Neon/Supabase). Per test locale puoi usare sqlite
+// cambiando provider in "sqlite" e DATABASE_URL in "file:./dev.db".
 
 generator client {
   provider = "prisma-client-js"
 }
 
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Un gruppo = un link di prenotazione da inviare ai pazienti
 model Group {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
   createdAt DateTime @default(now())
+
   slots     Slot[]
+  closures  Closure[]
+
+  @@index([slug])
 }
 
+// Uno slot prenotabile (un giorno + un orario di inizio)
 model Slot {
   id        String   @id @default(cuid())
-  date      String   // formato YYYY-MM-DD
-  time      String   // formato HH:MM
-  status    String   @default("free") // free | booked
   groupId   String
   group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  booking   Booking?
+  startAt   DateTime // istante di inizio (UTC nel db)
+  durationMin Int    @default(30)
   createdAt DateTime @default(now())
 
-  @@index([groupId, date])
+  booking   Booking?
+
+  // Uno stesso istante non può esistere due volte nello stesso gruppo:
+  // impedisce slot duplicati.
+  @@unique([groupId, startAt])
+  @@index([groupId, startAt])
 }
 
+// Una prenotazione fatta da un paziente su uno slot
 model Booking {
   id            String   @id @default(cuid())
-  slotId        String   @unique
+  slotId        String   @unique // 1 slot = max 1 prenotazione (anti doppia prenotazione)
   slot          Slot     @relation(fields: [slotId], references: [id], onDelete: Cascade)
   patientName   String
   patientEmail  String
-  status        String   @default("confirmed") // confirmed | cancelled
+  note          String?  // nota visibile solo all'admin
+  reminderSent  Boolean  @default(false)          // per il promemoria 24h
   createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Giorni di ferie / chiusura: bloccano la prenotazione anche se esistono slot
+model Closure {
+  id        String   @id @default(cuid())
+  groupId   String?  // null = chiusura globale (vale per tutti i gruppi)
+  group     Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  day       DateTime // giorno chiuso (mezzanotte, ora locale)
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([day])
 }

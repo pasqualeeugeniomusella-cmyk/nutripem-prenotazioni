@@ -1,12 +1,25 @@
+import Head from "next/head";
+
 export default function Home() {
   return (
-    <div style={{
-      minHeight: "100vh", background: "var(--navy)", color: "#fff",
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 24,
-    }}>
-      <h1 style={{ fontSize: 32, marginBottom: 10 }}>NutriPEM</h1>
-      <p style={{ color: "var(--muted)", marginBottom: 28 }}>Intervention on your performance</p>
-      <a href="/admin" className="btn btn-lime">Vai all'area Admin</a>
-    </div>
+    <>
+      <Head>
+        <title>NutriPEM — Prenotazioni</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
+      <div className="public-wrap">
+        <div className="public-top">
+          <div className="logo">NutriPEM</div>
+          <div className="subtitle">Prenotazioni</div>
+        </div>
+        <div className="card">
+          <h2>Sistema di prenotazione</h2>
+          <p className="hint">Per prenotare un appuntamento usa il link che ti è stato fornito.</p>
+          <p style={{ fontSize: 14, color: "var(--gray-500)" }}>
+            Sei l'amministratore? <a href="/admin" style={{ fontWeight: 700 }}>Accedi al pannello</a>.
+          </p>
+        </div>
+      </div>
+    </>
   );
 }
