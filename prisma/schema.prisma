@@ -50,6 +50,7 @@ model Booking {
   patientEmail  String
   note          String?  // nota visibile solo all'admin
   reminderSent  Boolean  @default(false)          // per il promemoria 24h
+  googleEventId String?  // id evento su Google Calendar (per poterlo eliminare)
   createdAt     DateTime @default(now())
 
   @@index([createdAt])
