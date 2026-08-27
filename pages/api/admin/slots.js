@@ -1,16 +1,11 @@
 import { prisma } from "../../../lib/prisma.js";
 import { requireAdmin } from "../../../lib/session.js";
 import { localDateTimeToUtc } from "../../../lib/time.js";
+import { createSlotEvent, deleteCalendarEvent } from "../../../lib/googleCalendar.js";
 
-// POST /api/admin/slots
-//   genera slot in blocco
-//   body: { groupId, days: ["2025-03-15", ...], startTime: "09:00",
-//           endTime: "13:00", durationMin: 30 }
-// DELETE /api/admin/slots  { id }  -> elimina un singolo slot (solo se libero)
 export default async function handler(req, res) {
   if (!(await requireAdmin(req, res))) return;
 
-  // Elenco slot di un gruppo (per la sezione "Slot generati")
   if (req.method === "GET") {
     const { groupId } = req.query;
     if (!groupId) return res.status(400).json({ error: "groupId mancante" });
@@ -30,7 +25,6 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     const { groupId, days, startTime, endTime, durationMin } = req.body || {};
-
     if (!groupId || !Array.isArray(days) || days.length === 0) {
       return res.status(400).json({ error: "Seleziona il gruppo e almeno un giorno." });
     }
@@ -41,11 +35,9 @@ export default async function handler(req, res) {
     if (dur < 5 || dur > 480) {
       return res.status(400).json({ error: "Durata non valida." });
     }
-
     const group = await prisma.group.findUnique({ where: { id: groupId } });
     if (!group) return res.status(404).json({ error: "Gruppo non trovato." });
 
-    // Costruisce tutti gli istanti di inizio
     const [sh, sm] = startTime.split(":").map(Number);
     const [eh, em] = endTime.split(":").map(Number);
     const startMinutes = sh * 60 + sm;
@@ -64,12 +56,26 @@ export default async function handler(req, res) {
       }
     }
 
-    // createMany con skipDuplicates: gli slot già esistenti (stesso gruppo+istante)
-    // vengono ignorati grazie al vincolo @@unique([groupId, startAt]).
     const result = await prisma.slot.createMany({
       data: toCreate,
       skipDuplicates: true,
     });
+
+    // Crea un evento "Slot libero" su Google Calendar per ogni slot appena creato
+    const startAts = toCreate.map((s) => s.startAt);
+    const newSlots = await prisma.slot.findMany({
+      where: { groupId, startAt: { in: startAts }, googleEventId: null },
+    });
+    for (const s of newSlots) {
+      const eventId = await createSlotEvent({
+        startAt: s.startAt,
+        durationMin: s.durationMin,
+        title: `Slot libero — ${group.name}`,
+      });
+      if (eventId) {
+        await prisma.slot.update({ where: { id: s.id }, data: { googleEventId: eventId } });
+      }
+    }
 
     return res.status(201).json({
       created: result.count,
@@ -90,6 +96,9 @@ export default async function handler(req, res) {
       return res.status(400).json({
         error: "Lo slot è prenotato. Cancella prima la prenotazione.",
       });
+    }
+    if (slot.googleEventId) {
+      await deleteCalendarEvent(slot.googleEventId);
     }
     await prisma.slot.delete({ where: { id } });
     return res.status(200).json({ ok: true });
