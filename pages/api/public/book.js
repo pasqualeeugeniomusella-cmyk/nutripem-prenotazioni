@@ -1,21 +1,17 @@
 import { prisma } from "../../../lib/prisma.js";
 import { italianDayKey } from "../../../lib/time.js";
 import { sendBookingConfirmation, sendAdminNotification } from "../../../lib/email.js";
-import { createCalendarEvent } from "../../../lib/googleCalendar.js";
+import { updateEventTitle } from "../../../lib/googleCalendar.js";
 
-// Validazione email semplice ma efficace
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// POST /api/public/book  { slotId, patientName, patientEmail }
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Metodo non consentito" });
   }
-
   const { slotId, patientName, patientEmail } = req.body || {};
-
   if (!slotId || !patientName || !patientEmail) {
     return res.status(400).json({ error: "Compila nome, email e scegli uno slot." });
   }
@@ -32,12 +28,10 @@ export default async function handler(req, res) {
   });
   if (!slot) return res.status(404).json({ error: "Slot non trovato." });
 
-  // Non prenotabile nel passato
   if (slot.startAt < new Date()) {
     return res.status(400).json({ error: "Questo orario è già passato." });
   }
 
-  // Giorno chiuso?
   const closures = await prisma.closure.findMany({
     where: { OR: [{ groupId: null }, { groupId: slot.groupId }] },
   });
@@ -46,8 +40,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Questo giorno non è disponibile." });
   }
 
-  // Creazione prenotazione. Il vincolo @unique su slotId garantisce che
-  // due pazienti non possano prenotare lo stesso slot: il secondo riceve errore.
   let booking;
   try {
     booking = await prisma.booking.create({
@@ -58,7 +50,6 @@ export default async function handler(req, res) {
       },
     });
   } catch (err) {
-    // P2002 = violazione vincolo unico -> slot appena preso da un altro
     if (err.code === "P2002") {
       return res.status(409).json({
         error: "Spiacenti, questo orario è appena stato prenotato. Scegline un altro.",
@@ -68,24 +59,19 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Errore durante la prenotazione." });
   }
 
-  // Email (best effort: non blocca la risposta se falliscono)
   sendBookingConfirmation(booking, slot).catch(() => {});
   sendAdminNotification(booking, slot, slot.group.name).catch(() => {});
 
-  // Sincronizzazione Google Calendar (best effort: se non configurato o fallisce,
-  // la prenotazione resta valida lo stesso)
   try {
-    const eventId = await createCalendarEvent({
-      startAt: slot.startAt,
-      durationMin: slot.durationMin,
-      groupName: slot.group.name,
-      patientName: booking.patientName,
-      patientEmail: booking.patientEmail,
-    });
-    if (eventId) {
+    if (slot.googleEventId) {
+      await updateEventTitle(
+        slot.googleEventId,
+        `${booking.patientName} — ${slot.group.name}`,
+        `Prenotazione NutriPEM\nGruppo: ${slot.group.name}\nCliente: ${booking.patientName}\nEmail: ${booking.patientEmail}`
+      );
       await prisma.booking.update({
         where: { id: booking.id },
-        data: { googleEventId: eventId },
+        data: { googleEventId: slot.googleEventId },
       });
     }
   } catch (e) {
